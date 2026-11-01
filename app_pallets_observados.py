@@ -7,7 +7,7 @@ import unicodedata
 from datetime import datetime
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS EN AZUL CORPORATIVO
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS CORPORATIVOS
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Control de Calidad - Uva 2026",
@@ -93,12 +93,11 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. TRANSFORMACIÓN DE ENLACE Y DESCARGA EN LÍNEA
+# 2. TRANSFORMACIÓN DE ENLACE Y LECTURA EN TIEMPO REAL
 # ---------------------------------------------------------
-ENLACE_SHAREPOINT_PREDETERMINADO = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
+ENLACE_SHAREPOINT_DEFAULT = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
 
 def normalizar_url_sharepoint(url: str) -> str:
-    """ Convierte enlaces compartidos de SharePoint/OneDrive a URLs de descarga directa. """
     url = url.strip()
     if "sharepoint.com" in url or "onedrive.live.com" in url or "1drv.ms" in url:
         url = re.sub(r'[\?&]web=1', '', url)
@@ -108,7 +107,6 @@ def normalizar_url_sharepoint(url: str) -> str:
 
 @st.cache_data(ttl=15)
 def cargar_datos_online(url: str):
-    """ Descarga el archivo Excel validando la respuesta HTTP en Streamlit Cloud. """
     url_directa = normalizar_url_sharepoint(url)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -117,83 +115,90 @@ def cargar_datos_online(url: str):
     resp = requests.get(url_directa, headers=headers, timeout=20, allow_redirects=True)
     resp.raise_for_status()
     
-    # Validar si SharePoint devolvió una página HTML (pantalla de inicio de sesión)
     content_type = resp.headers.get("Content-Type", "")
     if "text/html" in content_type or resp.content.startswith(b"<!DOCTYPE") or resp.content.startswith(b"<html"):
-        raise PermissionError("SharePoint bloqueó el acceso anónimo y requiere inicio de sesión corporativo.")
+        raise PermissionError("SharePoint devolvió una página de login. Verifica los permisos generales del enlace.")
         
     return pd.read_excel(io.BytesIO(resp.content))
 
-def normalizar_dataframe(df_in: pd.DataFrame) -> pd.DataFrame:
-    """ Detecta columnas sin importar acentos, mayúsculas o variaciones de nombre. """
+def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """ Normalización inteligente de columnas y valores para evitar pérdidas de datos. """
     df = df_in.copy()
     df.columns = [str(c).strip() for c in df.columns]
-    
-    def limpiar_texto_llave(t):
+
+    def norm_txt(t):
         if not isinstance(t, str):
             return ""
         t_norm = unicodedata.normalize('NFD', t)
         return ''.join(c for c in t_norm if unicodedata.category(c) != 'Mn').strip().upper()
 
-    # Mapeo dinámico de columnas por similitud de contenido
     col_map = {}
+    mapped_targets = set()
+    
+    # Mapeo por palabras clave de encabezado
     for c in df.columns:
-        c_clean = limpiar_texto_llave(c)
-        if 'DIA' in c_clean and 'PROCESO' in c_clean:
-            col_map[c] = 'DIA DE PROCESO'
-        elif 'RESOLUC' in c_clean:
+        c_clean = norm_txt(c)
+        if 'RESOLUCION' not in mapped_targets and any(k in c_clean for k in ['RESOLUC', 'ESTADO', 'ESTATUS', 'DICTAMEN', 'CALIFIC', 'RESULTAD', 'EVALUAC', 'CONFORMID', 'CONDICION']):
             col_map[c] = 'RESOLUCION'
-        elif 'CLIENTE' in c_clean:
+            mapped_targets.add('RESOLUCION')
+        elif 'DIA DE PROCESO' not in mapped_targets and ('PROCESO' in c_clean or ('DIA' in c_clean and 'PROC' in c_clean)):
+            col_map[c] = 'DIA DE PROCESO'
+            mapped_targets.add('DIA DE PROCESO')
+        elif 'CLIENTE' not in mapped_targets and any(k in c_clean for k in ['CLIENTE', 'DESTINO', 'RECIBIDOR', 'IMPORTADOR']):
             col_map[c] = 'CLIENTE'
-        elif 'VARIEDAD' in c_clean:
+            mapped_targets.add('CLIENTE')
+        elif 'VARIEDAD' not in mapped_targets and any(k in c_clean for k in ['VARIEDAD', 'CULTIVAR']):
             col_map[c] = 'VARIEDAD'
-        elif 'LOTE' in c_clean:
+            mapped_targets.add('VARIEDAD')
+        elif 'LOTE' not in mapped_targets and 'LOTE' in c_clean:
             col_map[c] = 'LOTE'
-        elif 'PALLET' in c_clean:
+            mapped_targets.add('LOTE')
+        elif 'N° PALLET' not in mapped_targets and ('PALLET' in c_clean or 'PALET' in c_clean):
             col_map[c] = 'N° PALLET'
-        elif 'ORDEN' in c_clean and 'BETA' in c_clean:
+            mapped_targets.add('N° PALLET')
+        elif 'ORDEN BETA' not in mapped_targets and ('ORDEN' in c_clean or 'BETA' in c_clean):
             col_map[c] = 'ORDEN BETA'
-        elif 'OBSERVAC' in c_clean:
+            mapped_targets.add('ORDEN BETA')
+        elif 'OBSERVACION' not in mapped_targets and any(k in c_clean for k in ['OBSERVAC', 'MOTIVO', 'COMENTARIO', 'DETALLE']):
             col_map[c] = 'OBSERVACION'
+            mapped_targets.add('OBSERVACION')
 
     df = df.rename(columns=col_map)
 
-    # Creación segura de columnas por defecto para evitar KeyError
-    if 'DIA DE PROCESO' not in df.columns:
-        df['DIA DE PROCESO'] = 'SIN DIA'
-    else:
-        df['DIA DE PROCESO'] = df['DIA DE PROCESO'].astype(str).str.replace('.0', '', regex=False).str.strip()
+    # Función para extraer series únicas incluso con duplicados
+    def obtener_serie(col_name):
+        if col_name not in df.columns:
+            return pd.Series([None] * len(df), index=df.index)
+        data = df[col_name]
+        if isinstance(data, pd.DataFrame):
+            return data.iloc[:, 0]
+        return data
 
-    if 'RESOLUCION' not in df.columns:
-        df['RESOLUCION'] = 'SIN ESTATUS'
-    else:
-        df['RESOLUCION'] = df['RESOLUCION'].fillna('SIN ESTATUS').astype(str).str.strip().str.upper()
+    # Clasificador flexible de estado
+    def clasificar_res(val):
+        if pd.isna(val):
+            return 'SIN ESTATUS'
+        s = str(val).replace('\xa0', ' ').strip().upper()
+        if not s or s in ['NAN', 'NONE', 'NULL', '']:
+            return 'SIN ESTATUS'
+        if any(k in s for k in ['NO', 'OBS', 'RECH', 'DESAP', 'FAIL', 'DEFECT', 'INCONF']):
+            return 'NO CONFORME'
+        if any(k in s for k in ['CONF', 'OK', 'APROB', 'ACEPT', 'PASS', 'BUENO']):
+            return 'CONFORME'
+        return s
 
-    if 'CLIENTE' not in df.columns:
-        df['CLIENTE'] = 'SIN CLIENTE'
-    else:
-        df['CLIENTE'] = df['CLIENTE'].fillna('SIN CLIENTE').astype(str).str.strip()
+    df['RESOLUCION'] = obtener_serie('RESOLUCION').apply(clasificar_res)
+    df['DIA DE PROCESO'] = obtener_serie('DIA DE PROCESO').astype(str).str.replace('.0', '', regex=False).str.strip()
+    df['CLIENTE'] = obtener_serie('CLIENTE').fillna('SIN CLIENTE').astype(str).str.strip()
+    df['VARIEDAD'] = obtener_serie('VARIEDAD').fillna('DESCONOCIDO').astype(str).str.strip()
+    df['LOTE'] = obtener_serie('LOTE').astype(str).str.replace('.0', '', regex=False).str.strip()
+    df['OBSERVACION_CLEAN'] = obtener_serie('OBSERVACION').fillna('').astype(str).str.strip()
 
-    if 'VARIEDAD' not in df.columns:
-        df['VARIEDAD'] = 'DESCONOCIDO'
-    else:
-        df['VARIEDAD'] = df['VARIEDAD'].fillna('DESCONOCIDO').astype(str).str.strip()
-
-    if 'LOTE' not in df.columns:
-        df['LOTE'] = 'SIN LOTE'
-    else:
-        df['LOTE'] = df['LOTE'].astype(str).str.replace('.0', '', regex=False).str.strip()
-
-    if 'OBSERVACION' not in df.columns:
-        df['OBSERVACION_CLEAN'] = ''
-    else:
-        df['OBSERVACION_CLEAN'] = df['OBSERVACION'].fillna('').astype(str).str.strip()
-
-    return df
+    return df, col_map
 
 
 # ---------------------------------------------------------
-# 3. BARRA LATERAL (ENTORNO Y CONFIGURACIÓN)
+# 3. BARRA LATERAL
 # ---------------------------------------------------------
 st.sidebar.title("🍇 Control de Calidad")
 st.sidebar.markdown("**Pallets Observados - Uva 2026**")
@@ -201,23 +206,23 @@ st.sidebar.markdown("---")
 
 url_input = st.sidebar.text_input(
     "🔗 Enlace SharePoint Web en línea:",
-    value=ENLACE_SHAREPOINT_PREDETERMINADO,
-    help="El sistema convierte automáticamente la URL a formato de descarga directa."
+    value=ENLACE_SHAREPOINT_DEFAULT,
+    help="El sistema ajusta automáticamente el link para descarga directa en tiempo real."
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**🚨 Respaldo por Archivo Local**")
+st.sidebar.markdown("**🚨 Respaldo Manual**")
 archivo_manual = st.sidebar.file_uploader(
     "Subir Excel manualmente:",
     type=["xlsx", "xls"],
-    help="Subida directa en caso de interrupción de acceso a SharePoint."
+    help="Utilizar si la red de SharePoint se interrumpe."
 )
 
 if st.sidebar.button("🔄 Refrescar Datos Nube"):
     st.cache_data.clear()
 
 # ---------------------------------------------------------
-# 4. LÓGICA DE CARGA EN LÍNEA
+# 4. CARGA DE DATOS
 # ---------------------------------------------------------
 df_raw = None
 origen_mensaje = ""
@@ -234,7 +239,7 @@ else:
     target_url = url_input.strip()
     if target_url:
         try:
-            with st.spinner("Conectando con SharePoint en tiempo real..."):
+            with st.spinner("Descargando desde SharePoint en tiempo real..."):
                 df_raw = cargar_datos_online(target_url)
                 hora_actual = datetime.now().strftime("%H:%M:%S")
                 origen_mensaje = f"🟢 **TIEMPO REAL (SharePoint Web):** Conectado con éxito a las {hora_actual}"
@@ -242,24 +247,29 @@ else:
         except PermissionError as pe:
             st.sidebar.error(f"⚠️ {pe}")
         except Exception as e:
-            st.sidebar.warning(f"⚠️ No se pudo obtener el archivo desde el enlace web ({e}).")
+            st.sidebar.warning(f"⚠️ No se pudo descargar desde el enlace ({e}).")
 
 # ---------------------------------------------------------
-# 5. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
+# 5. DASHBOARD EJECUTIVO
 # ---------------------------------------------------------
 st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
 
 if df_raw is None:
-    st.warning(
-        "💡 **Esperando conexión:** Si SharePoint requiere inicio de sesión en Streamlit Cloud, "
-        "sube el Excel mediante la opción **'Subir Excel manualmente'** en la barra lateral."
-    )
+    st.warning("💡 **Esperando conexión:** Carga el archivo en línea o sube un Excel mediante la barra lateral.")
 else:
     st.markdown(f'<div class="status-banner {tipo_banner}">{origen_mensaje}</div>', unsafe_allow_html=True)
-    df = normalizar_dataframe(df_raw)
+    
+    # Procesamiento flexible
+    df, mapa_cols = normalizar_dataframe_robusto(df_raw)
 
-    # FILTRO SEGURO POR DÍA DE PROCESO
-    dias_disponibles = sorted([d for d in df['DIA DE PROCESO'].unique() if d != 'SIN DIA'])
+    # SECCIÓN INTERACTIVA DE DIAGNÓSTICO (Útil para auditar columnas)
+    with st.expander("🔍 Diagnóstico de Columnas y Datos Detectados"):
+        st.write("**Columnas originales leídas del Excel:**", df_raw.columns.tolist())
+        st.write("**Mapeo automático de columnas aplicados:**", mapa_cols)
+        st.write("**Valores únicos detectados en Resolución:**", df['RESOLUCION'].value_counts().to_dict())
+
+    # FILTRO POR DÍA DE PROCESO
+    dias_disponibles = sorted([d for d in df['DIA DE PROCESO'].unique() if d not in ['SIN DIA', 'nan', 'NaN']])
     
     col_f1, _ = st.columns([1, 2])
     with col_f1:
@@ -317,7 +327,7 @@ else:
             df_cli_summary.columns = ['Cliente', 'Pallets Observados']
             st.dataframe(df_cli_summary, use_container_width=True, hide_index=True)
         else:
-            st.success("No existen pallets no conformes asignados a clientes en este filtro.")
+            st.info("No existen pallets no conformes asignados a clientes en este filtro.")
 
     with col_c2:
         st.bar_chart(pd.DataFrame({
@@ -351,11 +361,11 @@ else:
         with col_vl2:
             st.bar_chart(df_var_lote.set_index('LOTE')['Pallets Observados'])
     else:
-        st.success("No existen lotes ni variedades con observaciones no conformes.")
+        st.info("No existen lotes ni variedades con observaciones no conformes.")
 
     st.markdown("---")
 
-    # 3. TABLAS DETALLADAS POR ORDEN BETA Y PALLETS
+    # 3. DETALLE POR ORDEN BETA Y PALLETS
     st.subheader("📋 3. Detalle Registrado por Orden Beta y Pallet")
 
     cols_deseadas = [
