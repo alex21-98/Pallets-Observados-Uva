@@ -93,9 +93,9 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. TRANSFORMACIÓN DE ENLACE Y LECTURA EN TIEMPO REAL
+# 2. TRANSFORMACIÓN DE ENLACE Y PROCESAMIENTO DE DATOS
 # ---------------------------------------------------------
-ENLACE_SHAREPOINT_DEFAULT = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
+ENLACE_SHAREPOINT_PREDETERMINADO = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
 
 def normalizar_url_sharepoint(url: str) -> str:
     url = url.strip()
@@ -117,12 +117,11 @@ def cargar_datos_online(url: str):
     
     content_type = resp.headers.get("Content-Type", "")
     if "text/html" in content_type or resp.content.startswith(b"<!DOCTYPE") or resp.content.startswith(b"<html"):
-        raise PermissionError("SharePoint devolvió una página de login. Verifica los permisos generales del enlace.")
+        raise PermissionError("SharePoint devolvió una página de login HTML.")
         
     return pd.read_excel(io.BytesIO(resp.content))
 
-def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """ Normalización inteligente de columnas y valores para evitar pérdidas de datos. """
+def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
     df = df_in.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -132,19 +131,19 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> tuple[pd.DataFrame, dic
         t_norm = unicodedata.normalize('NFD', t)
         return ''.join(c for c in t_norm if unicodedata.category(c) != 'Mn').strip().upper()
 
+    # Mapeo dinámico de nombres de columnas
     col_map = {}
     mapped_targets = set()
     
-    # Mapeo por palabras clave de encabezado
     for c in df.columns:
         c_clean = norm_txt(c)
-        if 'RESOLUCION' not in mapped_targets and any(k in c_clean for k in ['RESOLUC', 'ESTADO', 'ESTATUS', 'DICTAMEN', 'CALIFIC', 'RESULTAD', 'EVALUAC', 'CONFORMID', 'CONDICION']):
+        if 'RESOLUCION' not in mapped_targets and any(k in c_clean for k in ['RESOLUC', 'ESTADO', 'ESTATUS', 'DICTAMEN']):
             col_map[c] = 'RESOLUCION'
             mapped_targets.add('RESOLUCION')
         elif 'DIA DE PROCESO' not in mapped_targets and ('PROCESO' in c_clean or ('DIA' in c_clean and 'PROC' in c_clean)):
             col_map[c] = 'DIA DE PROCESO'
             mapped_targets.add('DIA DE PROCESO')
-        elif 'CLIENTE' not in mapped_targets and any(k in c_clean for k in ['CLIENTE', 'DESTINO', 'RECIBIDOR', 'IMPORTADOR']):
+        elif 'CLIENTE' not in mapped_targets and any(k in c_clean for k in ['CLIENTE', 'DESTINO', 'RECIBIDOR']):
             col_map[c] = 'CLIENTE'
             mapped_targets.add('CLIENTE')
         elif 'VARIEDAD' not in mapped_targets and any(k in c_clean for k in ['VARIEDAD', 'CULTIVAR']):
@@ -159,13 +158,12 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> tuple[pd.DataFrame, dic
         elif 'ORDEN BETA' not in mapped_targets and ('ORDEN' in c_clean or 'BETA' in c_clean):
             col_map[c] = 'ORDEN BETA'
             mapped_targets.add('ORDEN BETA')
-        elif 'OBSERVACION' not in mapped_targets and any(k in c_clean for k in ['OBSERVAC', 'MOTIVO', 'COMENTARIO', 'DETALLE']):
+        elif 'OBSERVACION' not in mapped_targets and c == 'OBSERVACION':
             col_map[c] = 'OBSERVACION'
             mapped_targets.add('OBSERVACION')
 
     df = df.rename(columns=col_map)
 
-    # Función para extraer series únicas incluso con duplicados
     def obtener_serie(col_name):
         if col_name not in df.columns:
             return pd.Series([None] * len(df), index=df.index)
@@ -174,27 +172,49 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> tuple[pd.DataFrame, dic
             return data.iloc[:, 0]
         return data
 
-    # Clasificador flexible de estado
-    def clasificar_res(val):
-        if pd.isna(val):
-            return 'SIN ESTATUS'
-        s = str(val).replace('\xa0', ' ').strip().upper()
-        if not s or s in ['NAN', 'NONE', 'NULL', '']:
-            return 'SIN ESTATUS'
-        if any(k in s for k in ['NO', 'OBS', 'RECH', 'DESAP', 'FAIL', 'DEFECT', 'INCONF']):
-            return 'NO CONFORME'
-        if any(k in s for k in ['CONF', 'OK', 'APROB', 'ACEPT', 'PASS', 'BUENO']):
-            return 'CONFORME'
-        return s
+    # 1. Día de Proceso
+    df['DIA DE PROCESO'] = obtener_serie('DIA DE PROCESO').fillna('SIN DIA').astype(str).str.replace('.0', '', regex=False).str.strip()
 
-    df['RESOLUCION'] = obtener_serie('RESOLUCION').apply(clasificar_res)
-    df['DIA DE PROCESO'] = obtener_serie('DIA DE PROCESO').astype(str).str.replace('.0', '', regex=False).str.strip()
+    # 2. Cliente
     df['CLIENTE'] = obtener_serie('CLIENTE').fillna('SIN CLIENTE').astype(str).str.strip()
+    df['CLIENTE'] = df['CLIENTE'].replace({'nan': 'SIN CLIENTE', 'None': 'SIN CLIENTE', '': 'SIN CLIENTE'})
+
+    # 3. Variedad y Lote
     df['VARIEDAD'] = obtener_serie('VARIEDAD').fillna('DESCONOCIDO').astype(str).str.strip()
-    df['LOTE'] = obtener_serie('LOTE').astype(str).str.replace('.0', '', regex=False).str.strip()
+    df['LOTE'] = obtener_serie('LOTE').fillna('SIN LOTE').astype(str).str.replace('.0', '', regex=False).str.strip()
+
+    # 4. Observación
     df['OBSERVACION_CLEAN'] = obtener_serie('OBSERVACION').fillna('').astype(str).str.strip()
 
-    return df, col_map
+    # 5. Resolución Inteligente (Evalúa NaN en días 29-31)
+    def clasificar_resolucion(row):
+        val = row.get('RESOLUCION')
+        if pd.notna(val):
+            s = str(val).replace('\xa0', ' ').strip().upper()
+            if any(k in s for k in ['NO', 'OBS', 'RECH', 'DESAP', 'FAIL', 'DEFECT', 'INCONF']):
+                return 'NO CONFORME'
+            if any(k in s for k in ['CONF', 'OK', 'APROB', 'ACEPT', 'PASS', 'BUENO']):
+                return 'CONFORME'
+        
+        # Fallback si RESOLUCION está vacía en el archivo original
+        bayas = row.get('TOTAL BAYAS AFECTADAS', 0)
+        obs = str(row.get('OBSERVACION_CLEAN', '')).strip()
+        cli = str(row.get('CLIENTE', '')).strip()
+        
+        bayas_val = 0
+        try:
+            bayas_val = float(bayas) if pd.notna(bayas) else 0
+        except Exception:
+            bayas_val = 0
+            
+        if bayas_val > 0 or (obs != '' and obs.lower() != 'nan') or (cli != '' and cli != 'SIN CLIENTE' and cli.lower() != 'nan'):
+            return 'NO CONFORME'
+            
+        return 'SIN ESTATUS'
+
+    df['RESOLUCION'] = df.apply(clasificar_resolucion, axis=1)
+
+    return df
 
 
 # ---------------------------------------------------------
@@ -206,8 +226,8 @@ st.sidebar.markdown("---")
 
 url_input = st.sidebar.text_input(
     "🔗 Enlace SharePoint Web en línea:",
-    value=ENLACE_SHAREPOINT_DEFAULT,
-    help="El sistema ajusta automáticamente el link para descarga directa en tiempo real."
+    value=ENLACE_SHAREPOINT_PREDETERMINADO,
+    help="El sistema convierte automáticamente el link para descarga directa en tiempo real."
 )
 
 st.sidebar.markdown("---")
@@ -215,7 +235,7 @@ st.sidebar.markdown("**🚨 Respaldo Manual**")
 archivo_manual = st.sidebar.file_uploader(
     "Subir Excel manualmente:",
     type=["xlsx", "xls"],
-    help="Utilizar si la red de SharePoint se interrumpe."
+    help="Subida directa en caso de interrupción de acceso a SharePoint."
 )
 
 if st.sidebar.button("🔄 Refrescar Datos Nube"):
@@ -247,7 +267,7 @@ else:
         except PermissionError as pe:
             st.sidebar.error(f"⚠️ {pe}")
         except Exception as e:
-            st.sidebar.warning(f"⚠️ No se pudo descargar desde el enlace ({e}).")
+            st.sidebar.warning(f"⚠️ No se pudo descargar desde el enlace ({e}). Utiliza la opción de subir Excel manual.")
 
 # ---------------------------------------------------------
 # 5. DASHBOARD EJECUTIVO
@@ -259,16 +279,9 @@ if df_raw is None:
 else:
     st.markdown(f'<div class="status-banner {tipo_banner}">{origen_mensaje}</div>', unsafe_allow_html=True)
     
-    # Procesamiento flexible
-    df, mapa_cols = normalizar_dataframe_robusto(df_raw)
+    df = normalizar_dataframe_robusto(df_raw)
 
-    # SECCIÓN INTERACTIVA DE DIAGNÓSTICO (Útil para auditar columnas)
-    with st.expander("🔍 Diagnóstico de Columnas y Datos Detectados"):
-        st.write("**Columnas originales leídas del Excel:**", df_raw.columns.tolist())
-        st.write("**Mapeo automático de columnas aplicados:**", mapa_cols)
-        st.write("**Valores únicos detectados en Resolución:**", df['RESOLUCION'].value_counts().to_dict())
-
-    # FILTRO POR DÍA DE PROCESO
+    # FILTRO DE DÍA DE PROCESO
     dias_disponibles = sorted([d for d in df['DIA DE PROCESO'].unique() if d not in ['SIN DIA', 'nan', 'NaN']])
     
     col_f1, _ = st.columns([1, 2])
@@ -365,7 +378,7 @@ else:
 
     st.markdown("---")
 
-    # 3. DETALLE POR ORDEN BETA Y PALLETS
+    # 3. TABLAS DETALLADAS POR ORDEN BETA Y PALLETS
     st.subheader("📋 3. Detalle Registrado por Orden Beta y Pallet")
 
     cols_deseadas = [
