@@ -93,7 +93,7 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. TRANSFORMACIÓN DE ENLACE Y PROCESAMIENTO DE DATOS
+# 2. TRANSFORMACIÓN DE ENLACE Y DESCARGA EN TIEMPO REAL
 # ---------------------------------------------------------
 ENLACE_SHAREPOINT_PREDETERMINADO = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
 
@@ -105,7 +105,7 @@ def normalizar_url_sharepoint(url: str) -> str:
             url += ("&download=1" if "?" in url else "?download=1")
     return url
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=10) # 10 segundos de vigencia de caché para actualización rápida
 def cargar_datos_online(url: str):
     url_directa = normalizar_url_sharepoint(url)
     headers = {
@@ -117,11 +117,12 @@ def cargar_datos_online(url: str):
     
     content_type = resp.headers.get("Content-Type", "")
     if "text/html" in content_type or resp.content.startswith(b"<!DOCTYPE") or resp.content.startswith(b"<html"):
-        raise PermissionError("SharePoint devolvió una página de login HTML.")
+        raise PermissionError("SharePoint bloqueó la descarga directa y solicita inicio de sesión. Reemplaza el archivo en la nube o sube el Excel manual.")
         
     return pd.read_excel(io.BytesIO(resp.content))
 
 def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
+    """ Procesa los 772 registros y normaliza la columna de Resolución vacía en días 29 a 31. """
     df = df_in.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -131,7 +132,6 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
         t_norm = unicodedata.normalize('NFD', t)
         return ''.join(c for c in t_norm if unicodedata.category(c) != 'Mn').strip().upper()
 
-    # Mapeo dinámico de nombres de columnas
     col_map = {}
     mapped_targets = set()
     
@@ -172,21 +172,15 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
             return data.iloc[:, 0]
         return data
 
-    # 1. Día de Proceso
+    # Clean basic fields
     df['DIA DE PROCESO'] = obtener_serie('DIA DE PROCESO').fillna('SIN DIA').astype(str).str.replace('.0', '', regex=False).str.strip()
-
-    # 2. Cliente
     df['CLIENTE'] = obtener_serie('CLIENTE').fillna('SIN CLIENTE').astype(str).str.strip()
     df['CLIENTE'] = df['CLIENTE'].replace({'nan': 'SIN CLIENTE', 'None': 'SIN CLIENTE', '': 'SIN CLIENTE'})
-
-    # 3. Variedad y Lote
     df['VARIEDAD'] = obtener_serie('VARIEDAD').fillna('DESCONOCIDO').astype(str).str.strip()
     df['LOTE'] = obtener_serie('LOTE').fillna('SIN LOTE').astype(str).str.replace('.0', '', regex=False).str.strip()
-
-    # 4. Observación
     df['OBSERVACION_CLEAN'] = obtener_serie('OBSERVACION').fillna('').astype(str).str.strip()
 
-    # 5. Resolución Inteligente (Evalúa NaN en días 29-31)
+    # Intelligent Resolution Classification for NaN values (Days 29-31)
     def clasificar_resolucion(row):
         val = row.get('RESOLUCION')
         if pd.notna(val):
@@ -196,7 +190,6 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
             if any(k in s for k in ['CONF', 'OK', 'APROB', 'ACEPT', 'PASS', 'BUENO']):
                 return 'CONFORME'
         
-        # Fallback si RESOLUCION está vacía en el archivo original
         bayas = row.get('TOTAL BAYAS AFECTADAS', 0)
         obs = str(row.get('OBSERVACION_CLEAN', '')).strip()
         cli = str(row.get('CLIENTE', '')).strip()
@@ -231,27 +224,31 @@ url_input = st.sidebar.text_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**🚨 Respaldo Manual**")
+st.sidebar.markdown("**🚨 Respaldo Manual (Cargar Excel)**")
 archivo_manual = st.sidebar.file_uploader(
     "Subir Excel manualmente:",
     type=["xlsx", "xls"],
-    help="Subida directa en caso de interrupción de acceso a SharePoint."
+    help="Subida directa si SharePoint no está actualizado."
 )
 
-if st.sidebar.button("🔄 Refrescar Datos Nube"):
+st.sidebar.markdown("---")
+if st.sidebar.button("🔄 Limpiar Caché y Re-descargar"):
     st.cache_data.clear()
+    st.sidebar.success("¡Caché limpiada! Re-descargando datos de la nube...")
 
 # ---------------------------------------------------------
-# 4. CARGA DE DATOS
+# 4. CARGA DE DATOS Y PRIORIZACIÓN
 # ---------------------------------------------------------
 df_raw = None
 origen_mensaje = ""
 tipo_banner = ""
+registros_descargados = 0
 
 if archivo_manual is not None:
     try:
         df_raw = pd.read_excel(archivo_manual)
-        origen_mensaje = f"📁 **MODO MANUAL:** Mostrando datos del archivo subido ({archivo_manual.name})"
+        registros_descargados = len(df_raw)
+        origen_mensaje = f"📁 **MODO MANUAL:** Mostrando datos del archivo subido ({archivo_manual.name}) — Total filas: {registros_descargados}"
         tipo_banner = "status-local"
     except Exception as e:
         st.error(f"Error al leer el archivo Excel: {e}")
@@ -261,16 +258,17 @@ else:
         try:
             with st.spinner("Descargando desde SharePoint en tiempo real..."):
                 df_raw = cargar_datos_online(target_url)
+                registros_descargados = len(df_raw)
                 hora_actual = datetime.now().strftime("%H:%M:%S")
-                origen_mensaje = f"🟢 **TIEMPO REAL (SharePoint Web):** Conectado con éxito a las {hora_actual}"
+                origen_mensaje = f"🟢 **TIEMPO REAL (SharePoint Web):** Conectado con éxito a las {hora_actual} — Total filas en nube: {registros_descargados}"
                 tipo_banner = "status-online"
         except PermissionError as pe:
             st.sidebar.error(f"⚠️ {pe}")
         except Exception as e:
-            st.sidebar.warning(f"⚠️ No se pudo descargar desde el enlace ({e}). Utiliza la opción de subir Excel manual.")
+            st.sidebar.warning(f"⚠️ No se pudo descargar desde el enlace web ({e}). Sube el Excel manualmente mientras se sincroniza SharePoint.")
 
 # ---------------------------------------------------------
-# 5. DASHBOARD EJECUTIVO
+# 5. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
 # ---------------------------------------------------------
 st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
 
@@ -281,8 +279,18 @@ else:
     
     df = normalizar_dataframe_robusto(df_raw)
 
-    # FILTRO DE DÍA DE PROCESO
-    dias_disponibles = sorted([d for d in df['DIA DE PROCESO'].unique() if d not in ['SIN DIA', 'nan', 'NaN']])
+    # AUDITORÍA DE DATOS (Muestra el número de filas reales del archivo cargado)
+    with st.expander("🔍 Auditoría de Conexión y Fuente de Datos"):
+        col_aud1, col_aud2 = st.columns(2)
+        with col_aud1:
+            st.write("**Total de registros leídos:**", len(df))
+            st.write("**Días de Proceso detectados:**", sorted([str(d) for d in df['DIA DE PROCESO'].unique() if d != 'SIN DIA']))
+        with col_aud2:
+            st.write("**Desglose de Resoluciones:**", df['RESOLUCION'].value_counts().to_dict())
+            st.write("**Clientes identificados:**", df[df['CLIENTE'] != 'SIN CLIENTE']['CLIENTE'].nunique())
+
+    # FILTRO POR DÍA DE PROCESO
+    dias_disponibles = sorted([d for d in df['DIA DE PROCESO'].unique() if d not in ['SIN DIA', 'nan', 'NaN']], key=lambda x: int(x) if str(x).isdigit() else 0)
     
     col_f1, _ = st.columns([1, 2])
     with col_f1:
