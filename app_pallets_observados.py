@@ -6,16 +6,15 @@ import os
 from datetime import datetime
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS CORPORATIVOS
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS EN AZUL CORPORATIVO
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Pallets Observados - Uva",
+    page_title="Control de Calidad - Uva 2026",
     page_icon="🍇",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS en Azul Corporativo (#002060) y diseño responsive
 st.markdown("""
     <style>
     :root {
@@ -31,7 +30,6 @@ st.markdown("""
         padding-bottom: 2rem;
     }
     
-    /* Banners de estado de conexión */
     .status-banner {
         padding: 0.6rem 1rem;
         border-radius: 8px;
@@ -55,7 +53,6 @@ st.markdown("""
         border: 1px solid #BAE6FD;
     }
     
-    /* Tarjetas KPI Gráficas */
     .kpi-container {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -91,7 +88,6 @@ st.markdown("""
         color: #64748B;
     }
 
-    /* Adaptabilidad Móvil */
     @media (max-width: 768px) {
         .kpi-value { font-size: 1.4rem; }
         .block-container { padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -101,44 +97,41 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. FUNCIONES DE LECTURA Y LIMPIEZA DE DATOS
+# 2. TRANSFORMACIÓN DE ENLACE SHAREPOINT Y LECTURA HTTP
 # ---------------------------------------------------------
-ENLACE_SHAREPOINT_DEFAULT = (
-    "https://betacompe.sharepoint.com/sites/GerenciadeCalidad-Compartido/"
-    "Documentos%20compartidos/General/2.%20Base%20de%20datos%20de%20cartillas%20-%20SpaceAG/"
-    "CALIDAD%20PLANTAS%20NORTE/UVA/FORMATO%20PALLETS%20OBSERVADOS/"
-    "PALLETS%20OBSERVADOS%20-%20UVA%202026%20-%20Actualizado.xlsx?download=1"
-)
+# Enlace predeterminado de SharePoint Personal / OneDrive
+ENLACE_SHAREPOINT_NUEVO = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
 
 def normalizar_url_sharepoint(url: str) -> str:
-    """ Convierte URLs de visor web (?web=1) a descarga directa (?download=1). """
+    """ Convierte enlaces web de SharePoint/OneDrive a URLs de descarga directa. """
     url = url.strip()
-    if "?web=1" in url:
-        return url.replace("?web=1", "?download=1")
-    elif "sharepoint.com" in url and "download=1" not in url:
-        return url + "&download=1" if "?" in url else url + "?download=1"
+    if "download=1" not in url:
+        if "?web=1" in url:
+            url = url.replace("?web=1", "?download=1")
+        elif "?" in url:
+            url = url + "&download=1"
+        else:
+            url = url + "?download=1"
     return url
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=15) # Reconsulta la nube cada 15 segundos
 def cargar_datos_online(url: str):
-    """ Descarga el archivo Excel desde SharePoint por HTTP. """
     url_directa = normalizar_url_sharepoint(url)
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
     
-    resp = requests.get(url_directa, headers=headers, timeout=20)
-    resp.raise_for_status()
+    response = requests.get(url_directa, headers=headers, timeout=20, allow_redirects=True)
+    response.raise_for_status()
     
-    # Si la respuesta es HTML, SharePoint bloqueó la descarga anónima pidiendo login
-    content_type = resp.headers.get("Content-Type", "")
-    if "text/html" in content_type or resp.content.startswith(b"<!DOCTYPE") or resp.content.startswith(b"<html"):
-        raise PermissionError("SharePoint requiere autenticación corporativa para este enlace.")
+    # Validar si devolvió código HTML (pantalla de bloqueo de inicio de sesión) o el binario Excel
+    content_type = response.headers.get("Content-Type", "")
+    if "text/html" in content_type or response.content.startswith(b"<!DOCTYPE") or response.content.startswith(b"<html"):
+        raise PermissionError("SharePoint aún solicita inicio de sesión. Verifica los permisos de acceso general.")
         
-    return pd.read_excel(io.BytesIO(resp.content))
+    return pd.read_excel(io.BytesIO(response.content))
 
 def normalizar_datos(df: pd.DataFrame) -> pd.DataFrame:
-    """ Normaliza y estandariza las columnas del reporte de calidad. """
     df = df.copy()
     df.columns = [str(col).strip() for col in df.columns]
 
@@ -170,103 +163,94 @@ def normalizar_datos(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------
-# 3. BARRA LATERAL (CONFIGURACIÓN Y FUENTES DE DATOS)
+# 3. BARRA LATERAL (CONFIGURACIÓN Y FALLBACK DE EMERGENCIA)
 # ---------------------------------------------------------
 st.sidebar.title("🍇 Control de Calidad")
 st.sidebar.markdown("**Pallets Observados - Uva 2026**")
 st.sidebar.markdown("---")
 
-# Opción A: Enlace SharePoint
 url_input = st.sidebar.text_input(
-    "🔗 Enlace SharePoint corporativo:",
-    value=ENLACE_SHAREPOINT_DEFAULT,
-    help="El sistema convierte automáticamente el enlace a modo descarga."
-)
-
-# Opción B: Ruta de carpeta sincronizada OneDrive en esta PC/Servidor
-ruta_local_sincronizada = st.sidebar.text_input(
-    "💻 Ruta Local OneDrive (Opcional):",
-    value="",
-    placeholder=r"C:\Users\TuUsuario\Complejo Agroindustrial Beta\...",
-    help="Si la red corporativa bloquea el enlace web, coloca la ruta donde OneDrive sincroniza el archivo en esta PC."
+    "🔗 Enlace SharePoint en línea:",
+    value=ENLACE_SHAREPOINT_NUEVO,
+    help="El sistema ajusta automáticamente el link para descarga directa en tiempo real."
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**📂 Respaldo Manual (Subir Excel)**")
+st.sidebar.markdown("**🚨 Respaldo de Emergencia (Local)**")
 archivo_manual = st.sidebar.file_uploader(
-    "Subir archivo Excel directamente:",
+    "Subir archivo Excel manualmente:",
     type=["xlsx", "xls"],
-    help="Si no hay acceso a la nube ni a OneDrive local, sube el Excel descargado."
+    help="Activa este respaldo en caso de interrupción en la red o conexión."
 )
 
-if st.sidebar.button("🔄 Refrescar Caché de Datos"):
+ruta_local_sincronizada = st.sidebar.text_input(
+    "💻 Ruta Local OneDrive (Opcional):",
+    value="",
+    placeholder=r"C:\Users\...\PALLETS OBSERVADOS - UVA 2026 - Actualizado.xlsx",
+    help="Ingresa la ruta local del disco si la máquina tiene OneDrive sincronizado."
+)
+
+if st.sidebar.button("🔄 Refrescar Datos Nube"):
     st.cache_data.clear()
 
 # ---------------------------------------------------------
-# 4. LÓGICA HÍBRIDA DE CARGA (ORDEN DE PRIORIDAD)
+# 4. LÓGICA DE CARGA HÍBRIDA (PRIORIDADES)
 # ---------------------------------------------------------
 df_raw = None
 origen_mensaje = ""
 tipo_banner = ""
 
-# Prioridad 1: Subida manual de archivo por el usuario
+# Prioridad 1: Subida de Excel manual por el usuario (Sobrescribe todo)
 if archivo_manual is not None:
     try:
         df_raw = pd.read_excel(archivo_manual)
-        origen_mensaje = f"📁 **Modo Respaldo Manual:** Mostrando datos del archivo subido ({archivo_manual.name})"
+        origen_mensaje = f"📁 **MODO EMERGENCIA:** Mostrando datos del archivo cargado manualmente ({archivo_manual.name})"
         tipo_banner = "status-local"
     except Exception as e:
-        st.error(f"Error al leer el archivo Excel subido: {e}")
+        st.error(f"Error al leer el archivo Excel: {e}")
 
-# Prioridad 2: Ruta sincronizada localmente por OneDrive en la PC
+# Prioridad 2: Ruta especificada del disco local (OneDrive Sincronizado)
 elif ruta_local_sincronizada.strip() and os.path.exists(ruta_local_sincronizada.strip()):
     try:
         df_raw = pd.read_excel(ruta_local_sincronizada.strip())
-        hora_mod = datetime.fromtimestamp(os.path.getmtime(ruta_local_sincronizada.strip())).strftime("%H:%M:%S")
-        origen_mensaje = f"💻 **Modo OneDrive Sincronizado:** Leyendo archivo local en tiempo real (Modificado: {hora_mod})"
+        hora_m = datetime.fromtimestamp(os.path.getmtime(ruta_local_sincronizada.strip())).strftime("%H:%M:%S")
+        origen_mensaje = f"💻 **MODO ONEDRIVE LOCAL:** Leyendo archivo sincronizado en tiempo real (Modificado: {hora_m})"
         tipo_banner = "status-sync"
     except Exception as e:
         st.sidebar.error(f"Error al leer la ruta local: {e}")
 
-# Prioridad 3: Descarga por enlace en línea HTTP (SharePoint)
+# Prioridad 3: Descarga en tiempo real por el enlace de SharePoint
 else:
     target_url = url_input.strip()
     if target_url:
         try:
-            with st.spinner("Conectando con SharePoint Beta..."):
+            with st.spinner("Conectando con SharePoint en tiempo real..."):
                 df_raw = cargar_datos_online(target_url)
                 hora_actual = datetime.now().strftime("%H:%M:%S")
-                origen_mensaje = f"🟢 **Modo En Línea (SharePoint):** Sincronizado automáticamente a las {hora_actual}"
+                origen_mensaje = f"🟢 **TIEMPO REAL (SharePoint En Línea):** Sincronizado con éxito a las {hora_actual}"
                 tipo_banner = "status-online"
-        except PermissionError:
-            st.sidebar.warning(
-                "⚠️ **Acceso Restringido por TI:** El enlace de SharePoint requiere inicio de sesión corporativo. "
-                "Utiliza la opción de **Ruta Local OneDrive** o **Subir Excel**."
-            )
+        except PermissionError as pe:
+            st.sidebar.warning(f"⚠️ {pe}")
         except Exception as e:
-            st.sidebar.warning(f"⚠️ No se pudo conectar a la URL web ({e}). Utiliza las opciones de respaldo.")
-
+            st.sidebar.warning(f"⚠️ No se pudo descargar el archivo desde el enlace ({e}).")
 
 # ---------------------------------------------------------
-# 5. CONSTRUCCIÓN DEL DASHBOARD EJECUTIVO
+# 5. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
 # ---------------------------------------------------------
 st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
 
 if df_raw is None:
     st.info(
-        "💡 **Esperando fuente de datos:** Por favor sube el archivo Excel manualmente en la barra lateral "
-        "o ingresa la ruta del archivo sincronizado de OneDrive."
+        "💡 **Conectando...** Si la conexión en línea tarda o requiere permisos directos, "
+        "sube el Excel mediante la casilla **'Subir archivo Excel manualmente'** en la barra lateral."
     )
 else:
     st.markdown(f'<div class="status-banner {tipo_banner}">{origen_mensaje}</div>', unsafe_allow_html=True)
     df = normalizar_datos(df_raw)
 
-    # ---------------------------------------------------------
-    # DÍA DE PROCESO (FILTRO DE NIVEL SUPERIOR)
-    # ---------------------------------------------------------
+    # FILTRO POR DÍA DE PROCESO
     dias_disponibles = sorted(df['DIA DE PROCESO'].unique().tolist())
-    
-    col_f1, col_f2 = st.columns([1, 2])
+    col_f1, _ = st.columns([1, 2])
     with col_f1:
         dia_sel = st.selectbox(
             "📆 Seleccionar Día de Proceso:",
@@ -276,9 +260,7 @@ else:
 
     df_filtrado = df if dia_sel == "Todos los días" else df[df['DIA DE PROCESO'] == dia_sel]
 
-    # ---------------------------------------------------------
-    # 1. VISUALIZACIÓN GENERAL: KPIs GLOBALES
-    # ---------------------------------------------------------
+    # NIVEL GENERAL: METRICAS KPI
     total_pallets = len(df_filtrado)
     df_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'CONFORME']
     df_no_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'NO CONFORME']
@@ -314,9 +296,7 @@ else:
         </div>
     """, unsafe_allow_html=True)
 
-    # ---------------------------------------------------------
-    # 2. DESGLOSE INTERMEDIO A: POR CLIENTE
-    # ---------------------------------------------------------
+    # 1. NO CONFORMES POR CLIENTE
     st.subheader("🏢 1. No Conformes por Cliente")
     col_c1, col_c2 = st.columns([1, 1])
 
@@ -335,9 +315,7 @@ else:
 
     st.markdown("---")
 
-    # ---------------------------------------------------------
-    # 3. DESGLOSE INTERMEDIO B: POR VARIEDAD Y LOTE
-    # ---------------------------------------------------------
+    # 2. NO CONFORMES POR VARIEDAD Y LOTE
     st.subheader("🍇 2. No Conformes por Variedad y Lote")
     
     if cant_no_conf > 0:
@@ -366,9 +344,7 @@ else:
 
     st.markdown("---")
 
-    # ---------------------------------------------------------
-    # 4. TABLAS DETALLADAS POR ORDEN BETA Y REGISTROS
-    # ---------------------------------------------------------
+    # 3. TABLAS DETALLADAS POR ORDEN BETA Y REGISTROS
     st.subheader("📋 3. Detalle Registrado por Orden Beta y Pallet")
 
     cols_deseadas = [
