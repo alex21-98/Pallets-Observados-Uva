@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import requests
 import io
-import os
+import re
+import unicodedata
 from datetime import datetime
 
 # ---------------------------------------------------------
@@ -46,11 +47,6 @@ st.markdown("""
         background-color: #FEF3C7;
         color: #92400E;
         border: 1px solid #FDE68A;
-    }
-    .status-sync {
-        background-color: #E0F2FE;
-        color: #0369A1;
-        border: 1px solid #BAE6FD;
     }
     
     .kpi-container {
@@ -97,129 +93,143 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. TRANSFORMACIÓN DE ENLACE SHAREPOINT Y LECTURA HTTP
+# 2. TRANSFORMACIÓN DE ENLACE Y DESCARGA EN LÍNEA
 # ---------------------------------------------------------
-# Enlace predeterminado de SharePoint Personal / OneDrive
-ENLACE_SHAREPOINT_NUEVO = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
+ENLACE_SHAREPOINT_PREDETERMINADO = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
 
 def normalizar_url_sharepoint(url: str) -> str:
-    """ Convierte enlaces web de SharePoint/OneDrive a URLs de descarga directa. """
+    """ Convierte enlaces compartidos de SharePoint/OneDrive a URLs de descarga directa. """
     url = url.strip()
-    if "download=1" not in url:
-        if "?web=1" in url:
-            url = url.replace("?web=1", "?download=1")
-        elif "?" in url:
-            url = url + "&download=1"
-        else:
-            url = url + "?download=1"
+    if "sharepoint.com" in url or "onedrive.live.com" in url or "1drv.ms" in url:
+        url = re.sub(r'[\?&]web=1', '', url)
+        if "download=1" not in url:
+            url += ("&download=1" if "?" in url else "?download=1")
     return url
 
-@st.cache_data(ttl=15) # Reconsulta la nube cada 15 segundos
+@st.cache_data(ttl=15)
 def cargar_datos_online(url: str):
+    """ Descarga el archivo Excel validando la respuesta HTTP en Streamlit Cloud. """
     url_directa = normalizar_url_sharepoint(url)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
     
-    response = requests.get(url_directa, headers=headers, timeout=20, allow_redirects=True)
-    response.raise_for_status()
+    resp = requests.get(url_directa, headers=headers, timeout=20, allow_redirects=True)
+    resp.raise_for_status()
     
-    # Validar si devolvió código HTML (pantalla de bloqueo de inicio de sesión) o el binario Excel
-    content_type = response.headers.get("Content-Type", "")
-    if "text/html" in content_type or response.content.startswith(b"<!DOCTYPE") or response.content.startswith(b"<html"):
-        raise PermissionError("SharePoint aún solicita inicio de sesión. Verifica los permisos de acceso general.")
+    # Validar si SharePoint devolvió una página HTML (pantalla de inicio de sesión)
+    content_type = resp.headers.get("Content-Type", "")
+    if "text/html" in content_type or resp.content.startswith(b"<!DOCTYPE") or resp.content.startswith(b"<html"):
+        raise PermissionError("SharePoint bloqueó el acceso anónimo y requiere inicio de sesión corporativo.")
         
-    return pd.read_excel(io.BytesIO(response.content))
+    return pd.read_excel(io.BytesIO(resp.content))
 
-def normalizar_datos(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(col).strip() for col in df.columns]
+def normalizar_dataframe(df_in: pd.DataFrame) -> pd.DataFrame:
+    """ Detecta columnas sin importar acentos, mayúsculas o variaciones de nombre. """
+    df = df_in.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    def limpiar_texto_llave(t):
+        if not isinstance(t, str):
+            return ""
+        t_norm = unicodedata.normalize('NFD', t)
+        return ''.join(c for c in t_norm if unicodedata.category(c) != 'Mn').strip().upper()
 
-    if 'DIA DE PROCESO' in df.columns:
+    # Mapeo dinámico de columnas por similitud de contenido
+    col_map = {}
+    for c in df.columns:
+        c_clean = limpiar_texto_llave(c)
+        if 'DIA' in c_clean and 'PROCESO' in c_clean:
+            col_map[c] = 'DIA DE PROCESO'
+        elif 'RESOLUC' in c_clean:
+            col_map[c] = 'RESOLUCION'
+        elif 'CLIENTE' in c_clean:
+            col_map[c] = 'CLIENTE'
+        elif 'VARIEDAD' in c_clean:
+            col_map[c] = 'VARIEDAD'
+        elif 'LOTE' in c_clean:
+            col_map[c] = 'LOTE'
+        elif 'PALLET' in c_clean:
+            col_map[c] = 'N° PALLET'
+        elif 'ORDEN' in c_clean and 'BETA' in c_clean:
+            col_map[c] = 'ORDEN BETA'
+        elif 'OBSERVAC' in c_clean:
+            col_map[c] = 'OBSERVACION'
+
+    df = df.rename(columns=col_map)
+
+    # Creación segura de columnas por defecto para evitar KeyError
+    if 'DIA DE PROCESO' not in df.columns:
+        df['DIA DE PROCESO'] = 'SIN DIA'
+    else:
         df['DIA DE PROCESO'] = df['DIA DE PROCESO'].astype(str).str.replace('.0', '', regex=False).str.strip()
 
-    if 'RESOLUCION' in df.columns:
-        df['RESOLUCION'] = df['RESOLUCION'].fillna('SIN ESTATUS').astype(str).str.strip().str.upper()
-    else:
+    if 'RESOLUCION' not in df.columns:
         df['RESOLUCION'] = 'SIN ESTATUS'
-
-    if 'CLIENTE' in df.columns:
-        df['CLIENTE'] = df['CLIENTE'].fillna('SIN CLIENTE').astype(str).str.strip()
     else:
-        df['CLIENTE'] = 'SIN CLIENTE'
+        df['RESOLUCION'] = df['RESOLUCION'].fillna('SIN ESTATUS').astype(str).str.strip().str.upper()
 
-    if 'VARIEDAD' in df.columns:
+    if 'CLIENTE' not in df.columns:
+        df['CLIENTE'] = 'SIN CLIENTE'
+    else:
+        df['CLIENTE'] = df['CLIENTE'].fillna('SIN CLIENTE').astype(str).str.strip()
+
+    if 'VARIEDAD' not in df.columns:
+        df['VARIEDAD'] = 'DESCONOCIDO'
+    else:
         df['VARIEDAD'] = df['VARIEDAD'].fillna('DESCONOCIDO').astype(str).str.strip()
 
-    if 'LOTE' in df.columns:
+    if 'LOTE' not in df.columns:
+        df['LOTE'] = 'SIN LOTE'
+    else:
         df['LOTE'] = df['LOTE'].astype(str).str.replace('.0', '', regex=False).str.strip()
 
-    if 'OBSERVACION' in df.columns:
-        df['OBSERVACION_CLEAN'] = df['OBSERVACION'].fillna('').astype(str).str.strip()
-    else:
+    if 'OBSERVACION' not in df.columns:
         df['OBSERVACION_CLEAN'] = ''
+    else:
+        df['OBSERVACION_CLEAN'] = df['OBSERVACION'].fillna('').astype(str).str.strip()
 
     return df
 
 
 # ---------------------------------------------------------
-# 3. BARRA LATERAL (CONFIGURACIÓN Y FALLBACK DE EMERGENCIA)
+# 3. BARRA LATERAL (ENTORNO Y CONFIGURACIÓN)
 # ---------------------------------------------------------
 st.sidebar.title("🍇 Control de Calidad")
 st.sidebar.markdown("**Pallets Observados - Uva 2026**")
 st.sidebar.markdown("---")
 
 url_input = st.sidebar.text_input(
-    "🔗 Enlace SharePoint en línea:",
-    value=ENLACE_SHAREPOINT_NUEVO,
-    help="El sistema ajusta automáticamente el link para descarga directa en tiempo real."
+    "🔗 Enlace SharePoint Web en línea:",
+    value=ENLACE_SHAREPOINT_PREDETERMINADO,
+    help="El sistema convierte automáticamente la URL a formato de descarga directa."
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**🚨 Respaldo de Emergencia (Local)**")
+st.sidebar.markdown("**🚨 Respaldo por Archivo Local**")
 archivo_manual = st.sidebar.file_uploader(
-    "Subir archivo Excel manualmente:",
+    "Subir Excel manualmente:",
     type=["xlsx", "xls"],
-    help="Activa este respaldo en caso de interrupción en la red o conexión."
-)
-
-ruta_local_sincronizada = st.sidebar.text_input(
-    "💻 Ruta Local OneDrive (Opcional):",
-    value="",
-    placeholder=r"C:\Users\...\PALLETS OBSERVADOS - UVA 2026 - Actualizado.xlsx",
-    help="Ingresa la ruta local del disco si la máquina tiene OneDrive sincronizado."
+    help="Subida directa en caso de interrupción de acceso a SharePoint."
 )
 
 if st.sidebar.button("🔄 Refrescar Datos Nube"):
     st.cache_data.clear()
 
 # ---------------------------------------------------------
-# 4. LÓGICA DE CARGA HÍBRIDA (PRIORIDADES)
+# 4. LÓGICA DE CARGA EN LÍNEA
 # ---------------------------------------------------------
 df_raw = None
 origen_mensaje = ""
 tipo_banner = ""
 
-# Prioridad 1: Subida de Excel manual por el usuario (Sobrescribe todo)
 if archivo_manual is not None:
     try:
         df_raw = pd.read_excel(archivo_manual)
-        origen_mensaje = f"📁 **MODO EMERGENCIA:** Mostrando datos del archivo cargado manualmente ({archivo_manual.name})"
+        origen_mensaje = f"📁 **MODO MANUAL:** Mostrando datos del archivo subido ({archivo_manual.name})"
         tipo_banner = "status-local"
     except Exception as e:
         st.error(f"Error al leer el archivo Excel: {e}")
-
-# Prioridad 2: Ruta especificada del disco local (OneDrive Sincronizado)
-elif ruta_local_sincronizada.strip() and os.path.exists(ruta_local_sincronizada.strip()):
-    try:
-        df_raw = pd.read_excel(ruta_local_sincronizada.strip())
-        hora_m = datetime.fromtimestamp(os.path.getmtime(ruta_local_sincronizada.strip())).strftime("%H:%M:%S")
-        origen_mensaje = f"💻 **MODO ONEDRIVE LOCAL:** Leyendo archivo sincronizado en tiempo real (Modificado: {hora_m})"
-        tipo_banner = "status-sync"
-    except Exception as e:
-        st.sidebar.error(f"Error al leer la ruta local: {e}")
-
-# Prioridad 3: Descarga en tiempo real por el enlace de SharePoint
 else:
     target_url = url_input.strip()
     if target_url:
@@ -227,12 +237,12 @@ else:
             with st.spinner("Conectando con SharePoint en tiempo real..."):
                 df_raw = cargar_datos_online(target_url)
                 hora_actual = datetime.now().strftime("%H:%M:%S")
-                origen_mensaje = f"🟢 **TIEMPO REAL (SharePoint En Línea):** Sincronizado con éxito a las {hora_actual}"
+                origen_mensaje = f"🟢 **TIEMPO REAL (SharePoint Web):** Conectado con éxito a las {hora_actual}"
                 tipo_banner = "status-online"
         except PermissionError as pe:
-            st.sidebar.warning(f"⚠️ {pe}")
+            st.sidebar.error(f"⚠️ {pe}")
         except Exception as e:
-            st.sidebar.warning(f"⚠️ No se pudo descargar el archivo desde el enlace ({e}).")
+            st.sidebar.warning(f"⚠️ No se pudo obtener el archivo desde el enlace web ({e}).")
 
 # ---------------------------------------------------------
 # 5. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
@@ -240,16 +250,17 @@ else:
 st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
 
 if df_raw is None:
-    st.info(
-        "💡 **Conectando...** Si la conexión en línea tarda o requiere permisos directos, "
-        "sube el Excel mediante la casilla **'Subir archivo Excel manualmente'** en la barra lateral."
+    st.warning(
+        "💡 **Esperando conexión:** Si SharePoint requiere inicio de sesión en Streamlit Cloud, "
+        "sube el Excel mediante la opción **'Subir Excel manualmente'** en la barra lateral."
     )
 else:
     st.markdown(f'<div class="status-banner {tipo_banner}">{origen_mensaje}</div>', unsafe_allow_html=True)
-    df = normalizar_datos(df_raw)
+    df = normalizar_dataframe(df_raw)
 
-    # FILTRO POR DÍA DE PROCESO
-    dias_disponibles = sorted(df['DIA DE PROCESO'].unique().tolist())
+    # FILTRO SEGURO POR DÍA DE PROCESO
+    dias_disponibles = sorted([d for d in df['DIA DE PROCESO'].unique() if d != 'SIN DIA'])
+    
     col_f1, _ = st.columns([1, 2])
     with col_f1:
         dia_sel = st.selectbox(
@@ -260,7 +271,7 @@ else:
 
     df_filtrado = df if dia_sel == "Todos los días" else df[df['DIA DE PROCESO'] == dia_sel]
 
-    # NIVEL GENERAL: METRICAS KPI
+    # KPIs GLOBALES
     total_pallets = len(df_filtrado)
     df_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'CONFORME']
     df_no_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'NO CONFORME']
@@ -344,7 +355,7 @@ else:
 
     st.markdown("---")
 
-    # 3. TABLAS DETALLADAS POR ORDEN BETA Y REGISTROS
+    # 3. TABLAS DETALLADAS POR ORDEN BETA Y PALLETS
     st.subheader("📋 3. Detalle Registrado por Orden Beta y Pallet")
 
     cols_deseadas = [
