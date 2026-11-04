@@ -347,7 +347,7 @@ else:
     col_c1, col_c2 = st.columns([1, 1])
 
     with col_c1:
-        if cant_obs_cliente > 0:
+        if cant_no_conf > 0:
             df_cli_summary = df_no_conf['CLIENTE'].value_counts().reset_index()
             df_cli_summary.columns = ['Cliente/Condición', 'Pallets Observados']
             st.dataframe(df_cli_summary, use_container_width=True, hide_index=True)
