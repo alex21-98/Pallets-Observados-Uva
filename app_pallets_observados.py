@@ -94,46 +94,50 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. GENERADOR DE GRÁFICOS ESTÁTICOS Y LIMPIOS (MATPLOTLIB)
+# 2. GENERADOR DE GRÁFICOS HORIZONTALES CORPORATIVOS (MATPLOTLIB)
 # ---------------------------------------------------------
-def crear_grafico_barras_estatico(serie_data: pd.Series, color_barras='#002060'):
-    """ Genera una imagen estática de barras sin eje Y, sin cuadrículas y con etiquetas de datos. """
+def crear_grafico_barras_horizontal(serie_data: pd.Series, color_barras='#002060'):
+    """ Genera una imagen estática de barras horizontales, perfecta para textos largos y celulares. """
+    # Ordenar de menor a mayor para que el valor más alto aparezca arriba en el gráfico
+    serie_sorted = serie_data.sort_values(ascending=True)
+    
     fig, ax = plt.subplots(figsize=(6, 3.2), dpi=120)
     
-    x_labels = [str(k) for k in serie_data.index]
-    y_values = list(serie_data.values)
+    y_labels = [str(k) for k in serie_sorted.index]
+    x_values = list(serie_sorted.values)
     
-    bars = ax.bar(x_labels, y_values, color=color_barras, width=0.55, edgecolor='none')
+    bars = ax.barh(y_labels, x_values, color=color_barras, height=0.55, edgecolor='none')
     
-    # Eliminar cuadrícula y eje Y
+    # Eliminar cuadrícula y eje X numérico para máxima limpieza
     ax.grid(False)
-    ax.yaxis.set_visible(False)
+    ax.xaxis.set_visible(False)
     
-    # Eliminar líneas del marco (spines) excepto la base inferior
+    # Limpiar bordes laterales y superior
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['bottom'].set_color('#CBD5E1')
-    ax.spines['bottom'].set_linewidth(1)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['left'].set_color('#CBD5E1')
+    ax.spines['left'].set_linewidth(1)
     
-    # Configuración de etiquetas en eje X
-    plt.xticks(rotation=35, ha='right', fontsize=8.5, fontweight='bold', color='#1E293B')
+    # Estilo corporativo de texto en eje Y (horizontal)
+    plt.yticks(fontsize=9, fontweight='bold', color='#1E293B')
     
-    # Agregar etiquetas numéricas directas en la parte superior de cada barra
+    # Colocar valor numérico al lado derecho de cada barra
     for bar in bars:
-        height = bar.get_height()
-        if height > 0:
+        width = bar.get_width()
+        if width > 0:
             ax.annotate(
-                f'{int(height)}',
-                xy=(bar.get_x() + bar.get_width() / 2, height),
-                xytext=(0, 4),
+                f'{int(width)}',
+                xy=(width, bar.get_y() + bar.get_height() / 2),
+                xytext=(6, 0),
                 textcoords="offset points",
-                ha='center', va='bottom',
+                ha='left', va='center',
                 fontsize=9.5, fontweight='bold', color='#002060'
             )
-                    
-    if y_values and max(y_values) > 0:
-        ax.set_ylim(0, max(y_values) * 1.22)
+            
+    # Margen horizontal dinámico para evitar cortes de números
+    if x_values and max(x_values) > 0:
+        ax.set_xlim(0, max(x_values) * 1.25)
         
     plt.tight_layout()
     return fig
@@ -346,8 +350,8 @@ else:
     
     df = normalizar_dataframe_robusto(df_raw)
 
-    # AUDITORÍA DE DATOS
-    with st.expander("🔍Conexión y Fuente de Datos"):
+    # VERIFICAR DATOS
+    with st.expander("🔍 Conexión y Fuente de Datos"):
         col_aud1, col_aud2 = st.columns(2)
         with col_aud1:
             st.write("**Total de registros leídos:**", len(df))
@@ -411,7 +415,7 @@ else:
     # ---------------------------------------------------------
     # SECCIÓN 1: NO CONFORMES POR CLIENTE
     # ---------------------------------------------------------
-    st.subheader("🏢 1. No Conformes por Cliente / Asignación")
+    st.subheader("🏢 1. No Conformes por Cliente")
     col_c1, col_c2 = st.columns([1, 1])
 
     with col_c1:
@@ -425,15 +429,15 @@ else:
     with col_c2:
         if cant_no_conf > 0:
             serie_cli = df_no_conf['CLIENTE'].value_counts()
-            fig_cli = crear_grafico_barras_estatico(serie_cli, color_barras='#002060')
+            fig_cli = crear_grafico_barras_horizontal(serie_cli, color_barras='#002060')
             st.pyplot(fig_cli, use_container_width=True)
 
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # SECCIÓN 2: NO CONFORMES POR VARIEDAD (NUEVA TABLA Y LÓGICA)
+    # SECCIÓN 2: NO CONFORMES POR VARIEDAD (TABLA Y GRÁFICO HORIZONTAL)
     # ---------------------------------------------------------
-    st.subheader("🍇 2. No Conformes por Categoría de Variedad")
+    st.subheader("🍇 2. No Conformes por Variedad")
     
     if cant_no_conf > 0:
         agg_var = {'N° PALLET': 'count'}
@@ -455,7 +459,7 @@ else:
             st.dataframe(df_var_summary, use_container_width=True, hide_index=True)
         with col_v2:
             serie_var = df_no_conf['VARIEDAD_CATEGORIA'].value_counts()
-            fig_var = crear_grafico_barras_estatico(serie_var, color_barras='#002060')
+            fig_var = crear_grafico_barras_horizontal(serie_var, color_barras='#002060')
             st.pyplot(fig_var, use_container_width=True)
     else:
         st.info("No existen observaciones registradas por variedad.")
@@ -485,8 +489,8 @@ else:
         with col_vl1:
             st.dataframe(df_var_lote, use_container_width=True, hide_index=True)
         with col_vl2:
-            serie_lote = df_no_conf['LOTE'].value_counts().head(8) # Mostrar los 8 lotes principales
-            fig_lote = crear_grafico_barras_estatico(serie_lote, color_barras='#002060')
+            serie_lote = df_no_conf['LOTE'].value_counts().head(8)
+            fig_lote = crear_grafico_barras_horizontal(serie_lote, color_barras='#002060')
             st.pyplot(fig_lote, use_container_width=True)
     else:
         st.info("No existen lotes con observaciones no conformes.")
@@ -496,7 +500,7 @@ else:
     # ---------------------------------------------------------
     # SECCIÓN 4: TABLAS DETALLADAS POR ORDEN BETA Y PALLETS
     # ---------------------------------------------------------
-    st.subheader("📋 4. Detalle Registrado por Orden Beta y Pallet")
+    st.subheader("📋 4. Detalle Registrado en Space AG")
 
     cols_deseadas = [
         'ORDEN BETA', 'N° PALLET', 'CLIENTE', 'VARIEDAD_CATEGORIA', 'LOTE', 
