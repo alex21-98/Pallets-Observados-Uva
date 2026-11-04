@@ -105,7 +105,7 @@ def normalizar_url_sharepoint(url: str) -> str:
             url += ("&download=1" if "?" in url else "?download=1")
     return url
 
-@st.cache_data(ttl=10) # 10 segundos de vigencia de caché para actualización rápida
+@st.cache_data(ttl=10)
 def cargar_datos_online(url: str):
     url_directa = normalizar_url_sharepoint(url)
     headers = {
@@ -122,7 +122,6 @@ def cargar_datos_online(url: str):
     return pd.read_excel(io.BytesIO(resp.content))
 
 def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
-    """ Procesa los 772 registros y normaliza la columna de Resolución vacía en días 29 a 31. """
     df = df_in.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -172,7 +171,6 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
             return data.iloc[:, 0]
         return data
 
-    # Clean basic fields
     df['DIA DE PROCESO'] = obtener_serie('DIA DE PROCESO').fillna('SIN DIA').astype(str).str.replace('.0', '', regex=False).str.strip()
     df['CLIENTE'] = obtener_serie('CLIENTE').fillna('SIN CLIENTE').astype(str).str.strip()
     df['CLIENTE'] = df['CLIENTE'].replace({'nan': 'SIN CLIENTE', 'None': 'SIN CLIENTE', '': 'SIN CLIENTE'})
@@ -180,7 +178,6 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
     df['LOTE'] = obtener_serie('LOTE').fillna('SIN LOTE').astype(str).str.replace('.0', '', regex=False).str.strip()
     df['OBSERVACION_CLEAN'] = obtener_serie('OBSERVACION').fillna('').astype(str).str.strip()
 
-    # Intelligent Resolution Classification for NaN values (Days 29-31)
     def clasificar_resolucion(row):
         val = row.get('RESOLUCION')
         if pd.notna(val):
@@ -270,7 +267,7 @@ else:
 # ---------------------------------------------------------
 # 5. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
 # ---------------------------------------------------------
-st.title("📊 Resumen Pallets Observados - Uva")
+st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
 
 if df_raw is None:
     st.warning("💡 **Esperando conexión:** Carga el archivo en línea o sube un Excel mediante la barra lateral.")
@@ -279,7 +276,7 @@ else:
     
     df = normalizar_dataframe_robusto(df_raw)
 
-    # AUDITORÍA DE DATOS (Muestra el número de filas reales del archivo cargado)
+    # AUDITORÍA DE DATOS
     with st.expander("🔍 Auditoría de Conexión y Fuente de Datos"):
         col_aud1, col_aud2 = st.columns(2)
         with col_aud1:
@@ -302,7 +299,9 @@ else:
 
     df_filtrado = df if dia_sel == "Todos los días" else df[df['DIA DE PROCESO'] == dia_sel]
 
-    # KPIs GLOBALES
+    # ---------------------------------------------------------
+    # KPIs GLOBALES (AJUSTADOS PARA VISIBILIDAD DE 'SIN CLIENTE')
+    # ---------------------------------------------------------
     total_pallets = len(df_filtrado)
     df_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'CONFORME']
     df_no_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'NO CONFORME']
@@ -310,10 +309,10 @@ else:
     cant_conf = len(df_conf)
     cant_no_conf = len(df_no_conf)
     
-    # Separamos los no conformes en dos grupos
+    # NUEVO: Contamos cuántos no conformes tienen cliente y cuántos están pendientes ('SIN CLIENTE')
     df_obs_con_cliente = df_no_conf[df_no_conf['CLIENTE'] != 'SIN CLIENTE']
     df_obs_sin_cliente = df_no_conf[df_no_conf['CLIENTE'] == 'SIN CLIENTE']
-
+    
     cant_obs_con_cliente = len(df_obs_con_cliente)
     cant_obs_sin_cliente = len(df_obs_sin_cliente)
 
@@ -342,22 +341,25 @@ else:
         </div>
     """, unsafe_allow_html=True)
 
-    # 1. NO CONFORMES POR CLIENTE
-    st.subheader("🏢 1. No Conformes por Cliente")
+    # ---------------------------------------------------------
+    # 1. NO CONFORMES POR CLIENTE Y ASIGNACIÓN PENDIENTE
+    # ---------------------------------------------------------
+    st.subheader("🏢 1. No Conformes por Cliente / Asignación")
     col_c1, col_c2 = st.columns([1, 1])
 
     with col_c1:
         if cant_no_conf > 0:
+            # NUEVO: Usamos df_no_conf directamente para que 'SIN CLIENTE' aparezca en la tabla con su conteo
             df_cli_summary = df_no_conf['CLIENTE'].value_counts().reset_index()
-            df_cli_summary.columns = ['Cliente/Condición', 'Pallets Observados']
+            df_cli_summary.columns = ['Cliente / Estado', 'Pallets Observados']
             st.dataframe(df_cli_summary, use_container_width=True, hide_index=True)
         else:
-            st.info("No existen pallets no conformes asignados a clientes en este filtro.")
+            st.info("No existen pallets no conformes en este filtro.")
 
     with col_c2:
-        st.bar_chart(pd.DataFrame({
-            'Cantidad': [cant_conf, cant_obs_cliente, cant_no_conf - cant_obs_cliente]
-        }, index=['Conformes', 'Obs. Cliente', 'Sin Cliente']))
+        if cant_no_conf > 0:
+            # Gráfico de barras actualizado con todos los rubros (incluyendo SIN CLIENTE)
+            st.bar_chart(df_no_conf['CLIENTE'].value_counts())
 
     st.markdown("---")
 
