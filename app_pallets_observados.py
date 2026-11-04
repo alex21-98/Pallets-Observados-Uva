@@ -175,15 +175,15 @@ def clasificar_variedad_categoria(row):
     
     # 1. Si contiene barra inclinada '/' o 'MIX' en la variedad o pallet -> MIXTO
     if '/' in pallet or 'MIX' in pallet or '/' in variedad or 'MIX' in variedad:
-        return 'MIXTO (Combinado)'
+        return 'MIXTO'
     
     # 2. Variedades individuales
     if 'ALLISON' in variedad or 'SHEEGENE' in variedad or pallet.startswith('SH-'):
-        return 'Sheegene 20 Allison'
+        return 'SHEGEENE 20-ALISSON'
     elif 'SWEET GLOBE' in variedad or 'IFG TEN' in variedad or 'IFGTEN' in pallet:
-        return 'Sweet Globe'
+        return 'IFG TEN-SWEET GLOBE'
     elif 'BEBOP' in variedad or 'CELEBRATION' in variedad or 'IFG THREE' in variedad:
-        return 'Bebop'
+        return 'IFG THIRTY SEVEN-BEBOP'
     else:
         return variedad if variedad not in ['NAN', 'DESCONOCIDO', 'NONE', ''] else 'Otras Variedades'
 
@@ -280,7 +280,7 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------
 # 4. BARRA LATERAL
 # ---------------------------------------------------------
-st.sidebar.title("🍇 Control de Calidad")
+st.sidebar.title("🍇 FILTROS")
 st.sidebar.markdown("**Pallets Observados - Uva 2026**")
 st.sidebar.markdown("---")
 
@@ -293,7 +293,7 @@ url_input = st.sidebar.text_input(
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🚨 Respaldo Manual (Cargar Excel)**")
 archivo_manual = st.sidebar.file_uploader(
-    "Subir Excel manualmente:",
+    "Subir Excel de Space AG:",
     type=["xlsx", "xls"],
     help="Subida directa si SharePoint no está actualizado."
 )
@@ -335,19 +335,19 @@ else:
             st.sidebar.warning(f"⚠️ No se pudo descargar desde el enlace web ({e}). Sube el Excel manualmente mientras se sincroniza SharePoint.")
 
 # ---------------------------------------------------------
-# 6. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
+# 6. DASHBOARD PALLETS OBSERVADOS
 # ---------------------------------------------------------
-st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
+st.title("Resumen Pallets Observados - Uva 2026")
 
 if df_raw is None:
-    st.warning("💡 **Esperando conexión:** Carga el archivo en línea o sube un Excel mediante la barra lateral.")
+    st.warning("💡 **Esperando conexión:** Carga el archivo en línea o sube el Excel de Space AG mediante la barra lateral.")
 else:
     st.markdown(f'<div class="status-banner {tipo_banner}">{origen_mensaje}</div>', unsafe_allow_html=True)
     
     df = normalizar_dataframe_robusto(df_raw)
 
     # AUDITORÍA DE DATOS
-    with st.expander("🔍 Auditoría de Conexión y Fuente de Datos"):
+    with st.expander("🔍Conexión y Fuente de Datos"):
         col_aud1, col_aud2 = st.columns(2)
         with col_aud1:
             st.write("**Total de registros leídos:**", len(df))
