@@ -4,6 +4,7 @@ import requests
 import io
 import re
 import unicodedata
+import matplotlib.pyplot as plt
 from datetime import datetime
 
 # ---------------------------------------------------------
@@ -93,7 +94,53 @@ st.markdown("""
 
 
 # ---------------------------------------------------------
-# 2. TRANSFORMACIÓN DE ENLACE Y DESCARGA EN TIEMPO REAL
+# 2. GENERADOR DE GRÁFICOS ESTÁTICOS Y LIMPIOS (MATPLOTLIB)
+# ---------------------------------------------------------
+def crear_grafico_barras_estatico(serie_data: pd.Series, color_barras='#002060'):
+    """ Genera una imagen estática de barras sin eje Y, sin cuadrículas y con etiquetas de datos. """
+    fig, ax = plt.subplots(figsize=(6, 3.2), dpi=120)
+    
+    x_labels = [str(k) for k in serie_data.index]
+    y_values = list(serie_data.values)
+    
+    bars = ax.bar(x_labels, y_values, color=color_barras, width=0.55, edgecolor='none')
+    
+    # Eliminar cuadrícula y eje Y
+    ax.grid(False)
+    ax.yaxis.set_visible(False)
+    
+    # Eliminar líneas del marco (spines) excepto la base inferior
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    ax.spines['bottom'].set_color('#CBD5E1')
+    ax.spines['bottom'].set_linewidth(1)
+    
+    # Configuración de etiquetas en eje X
+    plt.xticks(rotation=35, ha='right', fontsize=8.5, fontweight='bold', color='#1E293B')
+    
+    # Agregar etiquetas numéricas directas en la parte superior de cada barra
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0:
+            ax.annotate(
+                f'{int(height)}',
+                xy=(bar.get_x() + bar.get_width() / 2, height),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha='center', va='bottom',
+                fontsize=9.5, fontweight='bold', color='#002060'
+            )
+                    
+    if y_values and max(y_values) > 0:
+        ax.set_ylim(0, max(y_values) * 1.22)
+        
+    plt.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------
+# 3. TRANSFORMACIÓN DE ENLACE Y PROCESAMIENTO DE DATOS
 # ---------------------------------------------------------
 ENLACE_SHAREPOINT_PREDETERMINADO = "https://betacompe-my.sharepoint.com/:x:/g/personal/apizarro_beta_com_pe/IQDiOQlfZUjtQpijpRx5SMP_AQlGgiWqFG4fPK2eYW-e2OM?e=Haqj3X"
 
@@ -117,9 +164,28 @@ def cargar_datos_online(url: str):
     
     content_type = resp.headers.get("Content-Type", "")
     if "text/html" in content_type or resp.content.startswith(b"<!DOCTYPE") or resp.content.startswith(b"<html"):
-        raise PermissionError("SharePoint bloqueó la descarga directa y solicita inicio de sesión. Reemplaza el archivo en la nube o sube el Excel manual.")
+        raise PermissionError("SharePoint bloqueó la descarga directa y solicita inicio de sesión.")
         
     return pd.read_excel(io.BytesIO(resp.content))
+
+def clasificar_variedad_categoria(row):
+    """ Clasifica las variedades simples e identifica pallets MIXTOS leyendo N° PALLET y VARIEDAD. """
+    pallet = str(row.get('N° PALLET', '')).upper()
+    variedad = str(row.get('VARIEDAD', '')).upper()
+    
+    # 1. Si contiene barra inclinada '/' o 'MIX' en la variedad o pallet -> MIXTO
+    if '/' in pallet or 'MIX' in pallet or '/' in variedad or 'MIX' in variedad:
+        return 'MIXTO (Combinado)'
+    
+    # 2. Variedades individuales
+    if 'ALLISON' in variedad or 'SHEEGENE' in variedad or pallet.startswith('SH-'):
+        return 'Sheegene 20 Allison'
+    elif 'SWEET GLOBE' in variedad or 'IFG TEN' in variedad or 'IFGTEN' in pallet:
+        return 'Sweet Globe'
+    elif 'BEBOP' in variedad or 'CELEBRATION' in variedad or 'IFG THREE' in variedad:
+        return 'Bebop'
+    else:
+        return variedad if variedad not in ['NAN', 'DESCONOCIDO', 'NONE', ''] else 'Otras Variedades'
 
 def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
     df = df_in.copy()
@@ -178,6 +244,10 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
     df['LOTE'] = obtener_serie('LOTE').fillna('SIN LOTE').astype(str).str.replace('.0', '', regex=False).str.strip()
     df['OBSERVACION_CLEAN'] = obtener_serie('OBSERVACION').fillna('').astype(str).str.strip()
 
+    # Clasificación de Variedad y Mixtos
+    df['VARIEDAD_CATEGORIA'] = df.apply(clasificar_variedad_categoria, axis=1)
+
+    # Clasificación de Resolución
     def clasificar_resolucion(row):
         val = row.get('RESOLUCION')
         if pd.notna(val):
@@ -208,7 +278,7 @@ def normalizar_dataframe_robusto(df_in: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------
-# 3. BARRA LATERAL
+# 4. BARRA LATERAL
 # ---------------------------------------------------------
 st.sidebar.title("🍇 Control de Calidad")
 st.sidebar.markdown("**Pallets Observados - Uva 2026**")
@@ -234,7 +304,7 @@ if st.sidebar.button("🔄 Limpiar Caché y Re-descargar"):
     st.sidebar.success("¡Caché limpiada! Re-descargando datos de la nube...")
 
 # ---------------------------------------------------------
-# 4. CARGA DE DATOS Y PRIORIZACIÓN
+# 5. CARGA DE DATOS Y PRIORIZACIÓN
 # ---------------------------------------------------------
 df_raw = None
 origen_mensaje = ""
@@ -265,7 +335,7 @@ else:
             st.sidebar.warning(f"⚠️ No se pudo descargar desde el enlace web ({e}). Sube el Excel manualmente mientras se sincroniza SharePoint.")
 
 # ---------------------------------------------------------
-# 5. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
+# 6. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
 # ---------------------------------------------------------
 st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
 
@@ -299,9 +369,7 @@ else:
 
     df_filtrado = df if dia_sel == "Todos los días" else df[df['DIA DE PROCESO'] == dia_sel]
 
-    # ---------------------------------------------------------
-    # KPIs GLOBALES (AJUSTADOS PARA VISIBILIDAD DE 'SIN CLIENTE')
-    # ---------------------------------------------------------
+    # KPIs GLOBALES
     total_pallets = len(df_filtrado)
     df_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'CONFORME']
     df_no_conf = df_filtrado[df_filtrado['RESOLUCION'] == 'NO CONFORME']
@@ -309,7 +377,6 @@ else:
     cant_conf = len(df_conf)
     cant_no_conf = len(df_no_conf)
     
-    # NUEVO: Contamos cuántos no conformes tienen cliente y cuántos están pendientes ('SIN CLIENTE')
     df_obs_con_cliente = df_no_conf[df_no_conf['CLIENTE'] != 'SIN CLIENTE']
     df_obs_sin_cliente = df_no_conf[df_no_conf['CLIENTE'] == 'SIN CLIENTE']
     
@@ -342,14 +409,13 @@ else:
     """, unsafe_allow_html=True)
 
     # ---------------------------------------------------------
-    # 1. NO CONFORMES POR CLIENTE Y ASIGNACIÓN PENDIENTE
+    # SECCIÓN 1: NO CONFORMES POR CLIENTE
     # ---------------------------------------------------------
     st.subheader("🏢 1. No Conformes por Cliente / Asignación")
     col_c1, col_c2 = st.columns([1, 1])
 
     with col_c1:
         if cant_no_conf > 0:
-            # NUEVO: Usamos df_no_conf directamente para que 'SIN CLIENTE' aparezca en la tabla con su conteo
             df_cli_summary = df_no_conf['CLIENTE'].value_counts().reset_index()
             df_cli_summary.columns = ['Cliente / Estado', 'Pallets Observados']
             st.dataframe(df_cli_summary, use_container_width=True, hide_index=True)
@@ -358,45 +424,82 @@ else:
 
     with col_c2:
         if cant_no_conf > 0:
-            # Gráfico de barras actualizado con todos los rubros (incluyendo SIN CLIENTE)
-            st.bar_chart(df_no_conf['CLIENTE'].value_counts())
+            serie_cli = df_no_conf['CLIENTE'].value_counts()
+            fig_cli = crear_grafico_barras_estatico(serie_cli, color_barras='#002060')
+            st.pyplot(fig_cli, use_container_width=True)
 
     st.markdown("---")
 
-    # 2. NO CONFORMES POR VARIEDAD Y LOTE
-    st.subheader("🍇 2. No Conformes por Variedad y Lote")
+    # ---------------------------------------------------------
+    # SECCIÓN 2: NO CONFORMES POR VARIEDAD (NUEVA TABLA Y LÓGICA)
+    # ---------------------------------------------------------
+    st.subheader("🍇 2. No Conformes por Categoría de Variedad")
+    
+    if cant_no_conf > 0:
+        agg_var = {'N° PALLET': 'count'}
+        if 'CAJAS EVALUADAS' in df_no_conf.columns:
+            agg_var['CAJAS EVALUADAS'] = lambda x: int(pd.to_numeric(x, errors='coerce').fillna(0).sum())
+        if 'TOTAL BAYAS AFECTADAS' in df_no_conf.columns:
+            agg_var['TOTAL BAYAS AFECTADAS'] = lambda x: round(pd.to_numeric(x, errors='coerce').fillna(0).sum(), 1)
+
+        df_var_summary = df_no_conf.groupby('VARIEDAD_CATEGORIA').agg(agg_var).reset_index()
+        df_var_summary = df_var_summary.rename(columns={
+            'VARIEDAD_CATEGORIA': 'Categoría de Variedad',
+            'N° PALLET': 'Pallets Observados',
+            'CAJAS EVALUADAS': 'Cajas Evaluadas',
+            'TOTAL BAYAS AFECTADAS': 'Total Bayas Afectadas'
+        }).sort_values(by='Pallets Observados', ascending=False)
+
+        col_v1, col_v2 = st.columns([1, 1])
+        with col_v1:
+            st.dataframe(df_var_summary, use_container_width=True, hide_index=True)
+        with col_v2:
+            serie_var = df_no_conf['VARIEDAD_CATEGORIA'].value_counts()
+            fig_var = crear_grafico_barras_estatico(serie_var, color_barras='#002060')
+            st.pyplot(fig_var, use_container_width=True)
+    else:
+        st.info("No existen observaciones registradas por variedad.")
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # SECCIÓN 3: NO CONFORMES POR LOTE
+    # ---------------------------------------------------------
+    st.subheader("📦 3. No Conformes por Lote")
     
     if cant_no_conf > 0:
         agg_dict = {'N° PALLET': 'count'}
         if 'CAJAS EVALUADAS' in df_no_conf.columns:
-            agg_dict['CAJAS EVALUADAS'] = 'sum'
+            agg_dict['CAJAS EVALUADAS'] = lambda x: int(pd.to_numeric(x, errors='coerce').fillna(0).sum())
         if 'TOTAL BAYAS AFECTADAS' in df_no_conf.columns:
-            agg_dict['TOTAL BAYAS AFECTADAS'] = 'sum'
+            agg_dict['TOTAL BAYAS AFECTADAS'] = lambda x: round(pd.to_numeric(x, errors='coerce').fillna(0).sum(), 1)
 
         df_var_lote = df_no_conf.groupby(['VARIEDAD', 'LOTE']).agg(agg_dict).reset_index()
-        
-        rename_map = {
+        df_var_lote = df_var_lote.rename(columns={
             'N° PALLET': 'Pallets Observados',
             'CAJAS EVALUADAS': 'Cajas Evaluadas',
             'TOTAL BAYAS AFECTADAS': 'Total Bayas Afectadas'
-        }
-        df_var_lote = df_var_lote.rename(columns=rename_map).sort_values(by='Pallets Observados', ascending=False)
+        }).sort_values(by='Pallets Observados', ascending=False)
         
-        col_vl1, col_vl2 = st.columns([3, 2])
+        col_vl1, col_vl2 = st.columns([1, 1])
         with col_vl1:
             st.dataframe(df_var_lote, use_container_width=True, hide_index=True)
         with col_vl2:
-            st.bar_chart(df_var_lote.set_index('LOTE')['Pallets Observados'])
+            serie_lote = df_no_conf['LOTE'].value_counts().head(8) # Mostrar los 8 lotes principales
+            fig_lote = crear_grafico_barras_estatico(serie_lote, color_barras='#002060')
+            st.pyplot(fig_lote, use_container_width=True)
     else:
-        st.info("No existen lotes ni variedades con observaciones no conformes.")
+        st.info("No existen lotes con observaciones no conformes.")
 
     st.markdown("---")
 
-    # 3. TABLAS DETALLADAS POR ORDEN BETA Y PALLETS
-    st.subheader("📋 3. Detalle Registrado por Orden Beta y Pallet")
+    # ---------------------------------------------------------
+    # SECCIÓN 4: TABLAS DETALLADAS POR ORDEN BETA Y PALLETS
+    # ---------------------------------------------------------
+    st.subheader("📋 4. Detalle Registrado por Orden Beta y Pallet")
 
     cols_deseadas = [
-        'ORDEN BETA', 'N° PALLET', 'CLIENTE', 'VARIEDAD', 'LOTE', 
+        'ORDEN BETA', 'N° PALLET', 'CLIENTE', 'VARIEDAD_CATEGORIA', 'LOTE', 
         'DIA DE PROCESO', 'RESOLUCION', 'TOTAL BAYAS AFECTADAS', 
         '% BAYAS AFECTADOS', 'OBSERVACION_CLEAN', 'INSPECTOR', 'SEDE'
     ]
@@ -411,7 +514,7 @@ else:
     with tab_nc:
         if cant_no_conf > 0:
             st.dataframe(
-                df_no_conf[cols_visibles].rename(columns={'OBSERVACION_CLEAN': 'OBSERVACION'}), 
+                df_no_conf[cols_visibles].rename(columns={'OBSERVACION_CLEAN': 'OBSERVACION', 'VARIEDAD_CATEGORIA': 'VARIEDAD'}), 
                 use_container_width=True, 
                 hide_index=True
             )
@@ -421,7 +524,7 @@ else:
     with tab_conf:
         if cant_conf > 0:
             st.dataframe(
-                df_conf[cols_visibles].rename(columns={'OBSERVACION_CLEAN': 'OBSERVACION'}), 
+                df_conf[cols_visibles].rename(columns={'OBSERVACION_CLEAN': 'OBSERVACION', 'VARIEDAD_CATEGORIA': 'VARIEDAD'}), 
                 use_container_width=True, 
                 hide_index=True
             )
@@ -430,7 +533,7 @@ else:
 
     with tab_todo:
         st.dataframe(
-            df_filtrado[cols_visibles].rename(columns={'OBSERVACION_CLEAN': 'OBSERVACION'}), 
+            df_filtrado[cols_visibles].rename(columns={'OBSERVACION_CLEAN': 'OBSERVACION', 'VARIEDAD_CATEGORIA': 'VARIEDAD'}), 
             use_container_width=True, 
             hide_index=True
         )
