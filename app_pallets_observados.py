@@ -10,7 +10,7 @@ from datetime import datetime
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS CORPORATIVOS
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Control de Calidad - Uva 2026",
+    page_title="Control de Pallets Observados - Uva 2026",
     page_icon="🍇",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -270,7 +270,7 @@ else:
 # ---------------------------------------------------------
 # 5. DASHBOARD EJECUTIVO DE CONTROL DE CALIDAD
 # ---------------------------------------------------------
-st.title("📊 Resumen Ejecutivo de Calidad - Planta Norte")
+st.title("📊 Resumen Pallets Observados - Uva")
 
 if df_raw is None:
     st.warning("💡 **Esperando conexión:** Carga el archivo en línea o sube un Excel mediante la barra lateral.")
@@ -310,8 +310,12 @@ else:
     cant_conf = len(df_conf)
     cant_no_conf = len(df_no_conf)
     
-    df_obs_cliente = df_no_conf[df_no_conf['CLIENTE'] != 'SIN CLIENTE']
-    cant_obs_cliente = len(df_obs_cliente)
+    # Separamos los no conformes en dos grupos
+    df_obs_con_cliente = df_no_conf[df_no_conf['CLIENTE'] != 'SIN CLIENTE']
+    df_obs_sin_cliente = df_no_conf[df_no_conf['CLIENTE'] == 'SIN CLIENTE']
+
+    cant_obs_con_cliente = len(df_obs_con_cliente)
+    cant_obs_sin_cliente = len(df_obs_sin_cliente)
 
     st.markdown(f"""
         <div class="kpi-container">
@@ -331,9 +335,9 @@ else:
                 <div class="kpi-sub">{(cant_no_conf/total_pallets*100 if total_pallets else 0):.1f}% del total</div>
             </div>
             <div class="kpi-card obs">
-                <div class="kpi-title">Observados por Cliente</div>
-                <div class="kpi-value">{cant_obs_cliente}</div>
-                <div class="kpi-sub">De {cant_no_conf} No Conformes</div>
+                <div class="kpi-title">Sin Cliente (Pendientes)</div>
+                <div class="kpi-value">{cant_obs_sin_cliente}</div>
+                <div class="kpi-sub">{cant_obs_con_cliente} con cliente asignado</div>
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -344,8 +348,8 @@ else:
 
     with col_c1:
         if cant_obs_cliente > 0:
-            df_cli_summary = df_obs_cliente['CLIENTE'].value_counts().reset_index()
-            df_cli_summary.columns = ['Cliente', 'Pallets Observados']
+            df_cli_summary = df_no_conf['CLIENTE'].value_counts().reset_index()
+            df_cli_summary.columns = ['Cliente/Condición', 'Pallets Observados']
             st.dataframe(df_cli_summary, use_container_width=True, hide_index=True)
         else:
             st.info("No existen pallets no conformes asignados a clientes en este filtro.")
